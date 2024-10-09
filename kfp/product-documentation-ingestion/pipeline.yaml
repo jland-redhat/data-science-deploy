@@ -1,0 +1,358 @@
+# PIPELINE DEFINITION
+# Name: document-ingestion
+components:
+  comp-format-documents:
+    executorLabel: exec-format-documents
+    inputDefinitions:
+      parameters:
+        documents:
+          parameterType: LIST
+    outputDefinitions:
+      artifacts:
+        splits_artifact:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-ingest-documents:
+    executorLabel: exec-ingest-documents
+    inputDefinitions:
+      artifacts:
+        input_artifact:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+  comp-load-documents:
+    executorLabel: exec-load-documents
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: LIST
+deploymentSpec:
+  executors:
+    exec-format-documents:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - format_documents
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.8.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'beautifulsoup4==4.12.2'\
+          \ 'html2text==2024.2.26' 'langchain==0.1.12' 'lxml==5.1.0' 'pypdf==4.0.2'\
+          \ 'tqdm==4.66.2' 'weaviate-client==3.26.2' 'torch==2.4.0' && \"$0\" \"$@\"\
+          \n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef format_documents(documents: List, splits_artifact: Output[Artifact]):\n\
+          \    from langchain_text_splitters import (\n        MarkdownHeaderTextSplitter,\n\
+          \        RecursiveCharacterTextSplitter,\n    )\n    from langchain_community.document_loaders.web_base\
+          \ import WebBaseLoader\n    from bs4 import BeautifulSoup\n    from langchain_community.document_transformers\
+          \ import Html2TextTransformer\n    from langchain_core.documents import\
+          \ Document\n    import json\n    class RedHatDocumentationLoader(WebBaseLoader):\n\
+          \        \"\"\"Load `Red Hat Documentation` single-html webpages.\"\"\"\n\
+          \n        def load(self) -> List[Document]:\n            \"\"\"Load webpages\
+          \ as Documents.\"\"\"\n            soup = self.scrape()\n            title\
+          \ = soup.select_one(\"h1\", {\"class\": \"title\"}).text  # Get title\n\n\
+          \            # Get main content\n            book = soup.select_one(\".book\"\
+          )\n            if book:\n                soup = book\n            else:\n\
+          \                article = soup.select_one(\".article\")\n             \
+          \   if article:\n                    soup = article\n                else:\n\
+          \                    soup = None\n\n            if soup is not None:\n \
+          \               # Remove unwanted sections\n                unwanted_classes\
+          \ = [\n                    \"producttitle\",\n                    \"subtitle\"\
+          ,\n                    \"abstract\",\n                    \"legalnotice\"\
+          ,\n                    \"calloutlist\",\n                    \"callout\"\
+          ,\n                ]\n                for unwanted_class in unwanted_classes:\n\
+          \                    for div in soup.find_all(\"div\", {\"class\": unwanted_class}):\n\
+          \                        div.decompose()\n                    for span in\
+          \ soup.find_all(\"span\", {\"class\": unwanted_class}):\n              \
+          \          span.decompose()\n                    for header in soup.find_all(\"\
+          h2\", {\"class\": unwanted_class}):\n                        header.decompose()\n\
+          \                for hr in soup.find_all(\"hr\"):\n                    hr.decompose()\n\
+          \n                # Find and delete anchor tag with content \"Legal Notice\"\
+          \n                for anchor in soup.find_all(\"a\"):\n                \
+          \    if anchor.text == \"Legal Notice\":\n                        anchor.decompose()\n\
+          \n                # Unwrap unwanted tags\n                unwrap_tags =\
+          \ [\"div\", \"span\", \"strong\", \"section\"]\n                for tag\
+          \ in unwrap_tags:\n                    for match in soup.findAll(tag):\n\
+          \                        match.unwrap()\n\n                # Transform description\
+          \ titles\n                for dt in soup.find_all(\"dt\"):\n           \
+          \         if dt.string:\n                        dt.string.replace_with(f\"\
+          -> {dt.string}\")\n\n                # Transform code blocks\n         \
+          \       for code in soup.find_all(\"pre\", {\"class\": \"programlisting\"\
+          }):\n                    try:\n                        content = code.text\n\
+          \                        code.clear()\n                        if \"language-yaml\"\
+          \ in code[\"class\"]:\n                            code.string = f\"```yaml\\\
+          n{content}\\n```\"\n                        elif \"language-json\" in code[\"\
+          class\"]:\n                            code.string = f\"```json\\n{content}\\\
+          n```\"\n                        elif \"language-bash\" in code[\"class\"\
+          ]:\n                            code.string = f\"```bash\\n{content}\\n```\"\
+          \n                        elif \"language-python\" in code[\"class\"]:\n\
+          \                            code.string = f\"```python\\n{content}\\n```\"\
+          \n                        elif \"language-none\" in code[\"class\"]:\n \
+          \                           code.string = f\"```\\n{content}\\n```\"\n \
+          \                       else:\n                            code.string =\
+          \ f\"```\\n{content}\\n```\"\n                    except Exception as e:\n\
+          \                        print(f\"Error processing code block: {e}\")\n\
+          \                for code in soup.find_all(\"pre\", {\"class\": \"screen\"\
+          }):\n                    try:\n                        content = code.text\n\
+          \                        code.clear()\n                        code.string\
+          \ = f\"```console\\n{content}\\n```\"\n                    except Exception\
+          \ as e:\n                        print(f\"Error processing code block: {e}\"\
+          )\n\n                # Remove all attributes\n                for tag in\
+          \ soup():\n                    tag.attrs.clear()\n\n                text\
+          \ = str(soup)  # Convert to string\n                text = text.replace(\"\
+          \\xa0\", \" \")  # Replace non-breaking space\n\n            else:\n   \
+          \             text = \"\"\n\n            # Add metadata\n            metadata\
+          \ = {\"source\": self.web_path, \"title\": title}\n\n            return\
+          \ [Document(page_content=text, metadata=metadata)]\n\n    print('Starting\
+          \ format_documents')\n    def get_pages(product, version, language) -> List:\n\
+          \        \"\"\"Get the list of pages from the Red Hat product documentation.\"\
+          \"\"\n\n        # Load the Red Hat documentation page\n        url = [\n\
+          \            \"https://access.redhat.com/documentation/\"\n            +\
+          \ language\n            + \"/\"\n            + product\n            + \"\
+          /\"\n            + version\n        ]\n        loader = WebBaseLoader(url)\n\
+          \        soup = loader.scrape()\n        print(f\"URL {url}\")\n       \
+          \ # Select only the element titles that contain the links to the documentation\
+          \ pages\n        filtered_elements = soup.find_all(\"h3\", attrs={\"slot\"\
+          :\"headline\"})\n        new_soup = BeautifulSoup(\"\", \"lxml\")\n    \
+          \    for element in filtered_elements:\n            new_soup.append(element)\n\
+          \        for match in new_soup.findAll(\"h3\"):\n            match.unwrap()\n\
+          \n        # Extract all the links\n        links = []\n        for match\
+          \ in new_soup.findAll(\"a\"):\n            links.append(match.get(\"href\"\
+          ))\n        links = [\n            url for url in links if url.startswith(\"\
+          /en/documentation\")\n        ]  # Filter out unwanted links\n        pages\
+          \ = [\n            link.replace(\"/html/\", \"/html-single/\") for link\
+          \ in links if \"/html/\" in link\n        ]  # We want single pages html\n\
+          \        # print(f\"{len(links)} links found\\n {len(pages)} pages found\\\
+          n\", links, pages)\n        return pages\n\n    def split_document(product,\
+          \ version, language, page, product_full_name) -> List:\n        \"\"\"Split\
+          \ a Red Hat documentation page into smaller sections.\"\"\"\n\n        #\
+          \ Load, parse, and transform to Markdown\n        document_url = [\"https://docs.redhat.com\"\
+          \ + page]\n        print(f\"Processing: {document_url}\")\n        loader\
+          \ = RedHatDocumentationLoader(document_url)\n        docs = loader.load()\n\
+          \        html2text = Html2TextTransformer()\n        md_docs = html2text.transform_documents(docs)\n\
+          \n        # Markdown splitter config\n        headers_to_split_on = [\n\
+          \            (\"#\", \"Header1\"),\n            (\"##\", \"Header2\"),\n\
+          \            (\"###\", \"Header3\"),\n        ]\n\n        markdown_splitter\
+          \ = MarkdownHeaderTextSplitter(\n            headers_to_split_on=headers_to_split_on,\
+          \ strip_headers=True\n        )\n\n        # Markdown split\n        new_splits:\
+          \ List[Document] = []\n        for doc in md_docs:\n            md_header_splits\
+          \ = markdown_splitter.split_text(doc.page_content)\n            for split\
+          \ in md_header_splits:\n                split.metadata |= doc.metadata\n\
+          \                split.metadata[\"product\"] = product\n               \
+          \ split.metadata[\"version\"] = version\n                split.metadata[\"\
+          language\"] = language\n                split.metadata[\"product_full_name\"\
+          ] = product_full_name\n            new_splits.extend(md_header_splits)\n\
+          \n        # Char-level splitter config\n        chunk_size = 2048\n    \
+          \    chunk_overlap = 256\n        text_splitter = RecursiveCharacterTextSplitter(\n\
+          \            chunk_size=chunk_size, chunk_overlap=chunk_overlap\n      \
+          \  )\n\n        # Char-level split\n        splits = text_splitter.split_documents(new_splits)\n\
+          \        json_splits = []\n\n        for split in splits:\n            content_header\
+          \ = f\"Section: {split.metadata['title']}\"\n            for header_name\
+          \ in [\"Header1\", \"Header2\", \"Header3\"]:\n                if header_name\
+          \ in split.metadata:\n                    content_header += f\" / {split.metadata[header_name]}\"\
+          \n            content_header += \"\\n\\nContent:\\n\"\n            split.page_content\
+          \ = content_header + split.page_content\n            json_splits.append({\"\
+          page_content\": split.page_content, \"metadata\": split.metadata})\n\n \
+          \       return json_splits\n\n    def generate_splits(product, product_full_name,\
+          \ version, language) -> List:\n        \"\"\"Generate the splits for a Red\
+          \ Hat documentation product.\"\"\"\n\n        # Find all the pages.\n  \
+          \      pages = get_pages(product, version, language)\n        print(f\"\
+          Found {len(pages)} pages:\")\n        print(pages)\n\n        # Generate\
+          \ the splits.\n        print(\"Generating splits...\")\n        all_splits\
+          \ = []\n        for page in pages:\n            splits = split_document(product,\
+          \ version, language, page, product_full_name)\n            all_splits.extend(splits)\n\
+          \        print(f\"Generated {len(all_splits)} splits.\")\n\n        return\
+          \ all_splits\n\n    DocumentSplit = NamedTuple('DocumentSplit', index_name=str,\
+          \ splits=List[str])\n    document_splits = []\n    for doc in documents:\n\
+          \        product, product_full_name, version, language = doc\n\n       \
+          \ index_name = f\"{product}_{language}_{version}\".replace(\n          \
+          \  \"-\", \"_\"\n        ).replace(\n            \".\", \"_\"\n        )\n\
+          \        splits = generate_splits(product=product, product_full_name=product_full_name,\
+          \ version=version, language=language)\n        document_splits.append(DocumentSplit(index_name=index_name,\
+          \ splits=splits))\n\n    # Writing splits to file to be passed to next step\n\
+          \    with open(splits_artifact.path, 'w') as f:\n        f.write(json.dumps(document_splits))\n\
+          \n\n    # return document_splits\n\n"
+        image: python:3.9
+    exec-ingest-documents:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - ingest_documents
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.8.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'langchain==0.1.12'\
+          \ 'weaviate-client==3.26.2' 'sentence-transformers==2.4.0' 'einops==0.7.0'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef ingest_documents(input_artifact: Input[Artifact]):\n    from\
+          \ langchain.embeddings.huggingface import HuggingFaceEmbeddings\n    from\
+          \ langchain_community.vectorstores import Weaviate\n    from langchain_core.documents\
+          \ import Document\n    import weaviate\n    import json\n    import os\n\
+          \n    # Reading artifact from previous step into variable\n    document_splits\
+          \ = []\n    with open(input_artifact.path) as input_file:\n        splits_artifact\
+          \ = input_file.read()\n        document_splits = json.loads(splits_artifact)\n\
+          \n    WEAVIATE_API_KEY = os.getenv('WEAVIATE_API_KEY')\n    WEAVIATE_HOST\
+          \ = os.getenv('WEAVIATE_HOST')\n    WEAVIATE_PORT = os.getenv('WEAVIATE_PORT')\n\
+          \n    if not WEAVIATE_API_KEY or not WEAVIATE_API_KEY or not WEAVIATE_HOST:\n\
+          \        print(\"Weaviate config not present. Check host, port and api_key\"\
+          )\n        exit(1)\n\n    # Replace with your Weaviate instance API key\n\
+          \    auth_config = weaviate.auth.AuthApiKey(api_key=WEAVIATE_API_KEY)  \n\
+          \n    # Iniatilize weaviate client\n    weaviate_client = weaviate.Client(\n\
+          \        url = WEAVIATE_HOST + \":\" + WEAVIATE_PORT,  # Replace with your\
+          \ Weaviate endpoint\n        auth_client_secret=auth_config\n    )\n\n \
+          \   # Health check for WEAVIATE_CLIENT connection\n    print(f\"Weaviate\
+          \ Client status: {weaviate_client.is_live()}\")\n\n    def ingest(index_name,\
+          \ splits):\n        # Here we use Nomic AI's Nomic Embed Text model to generate\
+          \ embeddings\n        # Adapt to your liking\n        model_kwargs = {\"\
+          trust_remote_code\": True, \"device\": \"cuda\"}\n        embeddings = HuggingFaceEmbeddings(\n\
+          \            model_name=\"nomic-ai/nomic-embed-text-v1\",\n            model_kwargs=model_kwargs,\n\
+          \            show_progress=True,\n        )\n\n        db = Weaviate(\n\
+          \            embedding=embeddings,\n            client=weaviate_client,\n\
+          \            index_name=index_name,\n            text_key=\"page_content\"\
+          ,\n        )\n\n        print(f\"Uploading document to collection {index_name}\"\
+          )\n        db.add_documents(splits)\n\n    for index_name, splits in document_splits:\n\
+          \        documents = [Document(page_content=split['page_content'], metadata=split['metadata'])\
+          \ for split in splits]\n        ingest(index_name=index_name, splits=documents)\n\
+          \n    print(\"Finished!\")\n\n"
+        env:
+        - name: WEAVIATE_HOST
+          value: http://weaviate-vector-db
+        - name: WEAVIATE_PORT
+          value: '8080'
+        image: default-route-openshift-image-registry.apps.rhsaia.vg6c.p1.openshiftapps.com/redhat-ods-applications/pytorch:2024.1
+    exec-load-documents:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - load_documents
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.8.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef load_documents() -> List:\n    Product = NamedTuple('Product',\
+          \ product=str, product_full_name=str, version=str, language=str)\n\n   \
+          \ products = [\n        Product('red_hat_openshift_ai_self-managed', 'Red\
+          \ Hat OpenShift AI Self-Managed', '2.10', 'en-US'),\n        Product('red_hat_openshift_ai_self-managed',\
+          \ 'Red Hat OpenShift AI Self-Managed', '2.9', 'en-US'),\n        Product('red_hat_openshift_ai_self-managed',\
+          \ 'Red Hat OpenShift AI Self-Managed', '2.8', 'en-US'),\n        Product('openshift_container_platform',\
+          \ 'Red Hat OpenShift Container Platform', '4.15', 'en-US'),\n        Product('openshift_container_platform',\
+          \ 'Red Hat OpenShift Container Platform', '4.14', 'en-US'),\n        Product('openshift_container_platform',\
+          \ 'Red Hat OpenShift Container Platform', '4.13', 'en-US'),\n        Product('openshift_container_platform',\
+          \ 'Red Hat OpenShift Container Platform', '4.12', 'en-US')\n    ]\n    return\
+          \ products\n\n"
+        image: python:3.8
+pipelineInfo:
+  name: document-ingestion
+root:
+  dag:
+    tasks:
+      format-documents:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-format-documents
+        dependentTasks:
+        - load-documents
+        inputs:
+          parameters:
+            documents:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: load-documents
+        taskInfo:
+          name: format-documents
+      ingest-documents:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-ingest-documents
+        dependentTasks:
+        - format-documents
+        inputs:
+          artifacts:
+            input_artifact:
+              taskOutputArtifact:
+                outputArtifactKey: splits_artifact
+                producerTask: format-documents
+        taskInfo:
+          name: ingest-documents
+      load-documents:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-load-documents
+        taskInfo:
+          name: load-documents
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.8.0
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-format-documents:
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
+        exec-ingest-documents:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: WEAVIATE_API_KEY
+              secretKey: AUTHENTICATION_APIKEY_ALLOWED_KEYS
+            secretName: weaviate-api-key-secret
+          tolerations:
+          - effect: NoSchedule
+            key: nvidia.com/gpu
+            operator: Exists
