@@ -1,0 +1,35 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: ingestion-pipeline-
+  labels:
+    tekton.dev/pipeline: ingestion-pipeline
+spec:
+  params:
+    - name: GIT_URL
+      value: 'https://github.com/jland-redhat/data-science-deploy.git'
+    - name: KFP_SCRIPT
+      value: ingestion-pipeline.py
+    - name: GIT_REVISION
+      value: main
+    - name: PYTHON_IMAGE
+      value: 3.11-ubi9
+    - name: TARGET_IMAGE
+      value: 'image-registry.openshift-image-registry.svc:5000/composer-ai/dspa'
+    - name: KUBEFLOW_ENDPOINT
+      value: 'https://ds-pipeline-dspa-composer-ai.apps.rhsaia.vg6c.p1.openshiftapps.com'
+  pipelineRef:
+    name: ingestion-pipeline
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        metadata:
+          creationTimestamp: null
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi
+          storageClassName: 'gp3-csi'
+          volumeMode: Filesystem
